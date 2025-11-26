@@ -17,7 +17,7 @@ Write-Host ""
 
 # Build the executable
 pyinstaller --onefile `
-    --name "MouseMonitor" `
+    --name "mma" `
     --console `
     --hidden-import=pynput `
     --hidden-import=pynput.mouse `
@@ -32,9 +32,9 @@ if ($LASTEXITCODE -eq 0) {
     Write-Host "========================================" -ForegroundColor Green
     Write-Host "Build completed successfully!" -ForegroundColor Green
     Write-Host ""
-    Write-Host "Executable location: dist\MouseMonitor.exe" -ForegroundColor Cyan
+    Write-Host "Executable location: dist\mma.exe" -ForegroundColor Cyan
     Write-Host ""
-    Write-Host "You can now run MouseMonitor.exe without Python installed." -ForegroundColor Green
+    Write-Host "You can now run mma.exe without Python installed." -ForegroundColor Green
     Write-Host "========================================" -ForegroundColor Green
 } else {
     Write-Host ""

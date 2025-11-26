@@ -16,7 +16,7 @@ A Python application that monitors mouse movement and automatically moves the mo
 ### Option 1: Use Pre-built Executable
 
 1. Go to the `dist` folder
-2. Double-click `MouseMonitor.exe`
+2. Double-click `mma.exe`
 3. That's it! No Python required.
 
 ### Option 2: Build Your Own Executable
@@ -31,7 +31,7 @@ pip install -r requirements.txt
    - **PowerShell**: Run `.\build_exe.ps1`
    - **Manual**: See `BUILD_INSTRUCTIONS.md`
 
-3. Find your executable in `dist\MouseMonitor.exe`
+3. Find your executable in `dist\mma.exe`
 
 ## Installation (Python Script)
 
@@ -44,9 +44,9 @@ pip install -r requirements.txt
 
 ### Running the Executable
 
-Simply double-click `MouseMonitor.exe` from the `dist` folder, or run from command line:
+Simply double-click `mma.exe` from the `dist` folder, or run from command line:
 ```bash
-dist\MouseMonitor.exe
+dist\mma.exe
 ```
 
 ### Running the Python Script

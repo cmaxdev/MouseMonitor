@@ -32,26 +32,26 @@ pip install pyinstaller
 
 2. Build the executable:
 ```bash
-pyinstaller --onefile --name MouseMonitor --console --hidden-import=pynput --hidden-import=pynput.mouse --hidden-import=pynput.mouse._win32 --collect-all pynput mma.py
+pyinstaller --onefile --name mma --console --hidden-import=pynput --hidden-import=pynput.mouse --hidden-import=pynput.mouse._win32 --collect-all pynput mma.py
 ```
 
 ## Build Output
 
 After building, you'll find:
-- **Executable**: `dist\MouseMonitor.exe`
+- **Executable**: `dist\mma.exe`
 - **Build files**: `build\` folder (can be deleted after building)
-- **Spec file**: `MouseMonitor.spec` (can be kept for future builds)
+- **Spec file**: `mma.spec` (can be kept for future builds)
 
 ## Running the Executable
 
 1. Navigate to the `dist` folder
-2. Run `MouseMonitor.exe`
+2. Run `mma.exe`
 3. No Python installation required!
 
 ## Distribution
 
 To distribute the application:
-1. Copy `dist\MouseMonitor.exe` to the target computer
+1. Copy `dist\mma.exe` to the target computer
 2. The executable is completely standalone - no dependencies needed
 3. You can also distribute the `README.md` file with usage instructions
 
@@ -66,7 +66,7 @@ Some antivirus software may flag PyInstaller executables as suspicious. This is 
 ### Missing Dependencies
 If the executable fails to run, try rebuilding with:
 ```bash
-pyinstaller --onefile --name MouseMonitor --console --collect-all pynput --collect-all ctypes mma.py
+pyinstaller --onefile --name mma --console --collect-all pynput --collect-all ctypes mma.py
 ```
 
 ### File Size
@@ -74,13 +74,13 @@ The executable will be relatively large (20-30MB) because it includes Python and
 
 ## Advanced: Customizing the Build
 
-Edit `MouseMonitor.spec` (generated after first build) for advanced options like:
+Edit `mma.spec` (generated after first build) for advanced options like:
 - Adding an icon
 - Including additional files
 - Customizing the build process
 
 Then rebuild with:
 ```bash
-pyinstaller MouseMonitor.spec
+pyinstaller mma.spec
 ```
 

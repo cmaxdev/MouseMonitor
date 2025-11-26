@@ -15,7 +15,7 @@ echo.
 
 REM Build the executable
 pyinstaller --onefile ^
-    --name "MouseMonitor" ^
+    --name "mma" ^
     --icon=NONE ^
     --console ^
     --add-data "README.md;." ^
@@ -38,9 +38,9 @@ echo.
 echo ========================================
 echo Build completed successfully!
 echo.
-echo Executable location: dist\MouseMonitor.exe
+echo Executable location: dist\mma.exe
 echo.
-echo You can now run MouseMonitor.exe without Python installed.
+echo You can now run mma.exe without Python installed.
 echo ========================================
 echo.
 pause
