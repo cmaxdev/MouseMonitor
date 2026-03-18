@@ -1,36 +1,51 @@
 """
 Mouse Monitor and Auto-Mover
 
-This script monitors mouse movement and automatically moves the mouse
-if it remains idle for more than 30 seconds.
+Monitors user activity (keyboard and mouse: clicks, scroll). If no user event
+occurs for 30 seconds, automatically generates either a mouse scroll event or
+an Alt+Tab event.
 """
 
 import time
 import threading
 import random
-import math
 import ctypes
 from ctypes import wintypes
 from pynput import mouse, keyboard
 from pynput.mouse import Controller as MouseController
+
+# Work around pynput crash on Python 3.13 / when Alt+Tab generates WM_SYSKEYDOWN:
+# _convert raises NotImplementedError; the except block then calls self._handle, but
+# threading.Thread has overwritten _handle with the OS thread handle → TypeError.
+# Patch the win32 _handler so we never call the buggy fallback.
+try:
+    import pynput._util.win32 as _pynput_win32
+    _orig_handler = _pynput_win32.ListenerMixin._handler
+    def _handler_fixed(self, code, msg, lpdata):
+        try:
+            converted = self._convert(code, msg, lpdata)
+            if converted is not None:
+                self._message_loop.post(self._WM_PROCESS, *converted)
+                if getattr(self, "suppress", False):
+                    self.suppress_event()
+        except NotImplementedError:
+            pass  # Skip unknown messages; do not call self._handle (overwritten by Thread on 3.13)
+    _pynput_win32.ListenerMixin._handler = _handler_fixed
+except Exception:
+    pass
 
 
 class MouseMonitor:
     def __init__(self):
         self.mouse_controller = MouseController()
         self.last_position = None
-        self.last_activity_time = time.time()  # Track last user activity (mouse or keyboard)
-        self.check_interval = 5  # Check manual events every 5 seconds
-        self.idle_threshold = 5  # 5 seconds of no activity before starting auto-movement
-        self.auto_move_interval = 5  # Generate automatic events every 5 seconds
+        self.last_activity_time = time.time()  # Last user activity (keyboard or mouse click/scroll)
+        self.check_interval = 5  # Check for user activity every 5 seconds
+        self.idle_threshold = 30  # After 30 seconds with no user event, generate scroll or Alt+Tab
+        self.auto_move_interval = 5  # Interval between generated events when idle
         self.is_auto_moving = False
         self.auto_move_thread = None
         self.running = True
-        self.auto_move_event_ids = set()  # Track auto-generated movement event IDs
-        self.auto_move_counter = 0  # Counter for unique auto-move IDs
-        self.last_auto_position = None  # Track last auto-move position for detection
-        self.last_auto_move_time = None  # Track when last auto-move occurred
-        self.is_auto_move_in_progress = False  # Flag set during auto-movement
         
         # Mode switching for periodic frequent events
         self.frequent_mode = False  # When True, next event will wait 1 minute
@@ -107,11 +122,13 @@ class MouseMonitor:
             self.KEYBDINPUT_STRUCT = KEYBDINPUT
             self.INPUT_UNION = INPUT_UNION
             
-            # Virtual key codes for arrow keys
+            # Virtual key codes for arrow keys and modifiers
             self.VK_UP = 0x26
             self.VK_DOWN = 0x28
             self.VK_LEFT = 0x25
             self.VK_RIGHT = 0x27
+            self.VK_MENU = 0x12   # Alt
+            self.VK_TAB = 0x09    # Tab
             
             # Get user32.dll functions
             self.user32 = ctypes.windll.user32
@@ -151,37 +168,6 @@ class MouseMonitor:
         """Update activity time and stop auto-movement"""
         current_time = time.time()
         with self.lock:
-            self.last_activity_time = current_time
-            if self.is_auto_moving:
-                self.is_auto_moving = False
-    
-    def on_move(self, x, y):
-        """Callback function when mouse moves - distinguishes manual from automatic movements"""
-        # Fast check without lock first
-        if self.is_auto_move_in_progress:
-            return
-        
-        current_time = time.time()
-        
-        # Quick check without lock for recent auto-move
-        if self.last_auto_move_time and (current_time - self.last_auto_move_time) < 1.0:
-            if self.last_auto_position:
-                # Fast distance check without lock
-                dx = x - self.last_auto_position[0]
-                dy = y - self.last_auto_position[1]
-                distance_sq = dx * dx + dy * dy
-                # If very close to auto-move position and recent, likely auto-generated
-                if distance_sq < 100:  # 10^2 = 100, avoiding sqrt for speed
-                    return
-        
-        # Only acquire lock for real manual movements
-        with self.lock:
-            # Double-check auto-move flag (might have changed)
-            if self.is_auto_move_in_progress:
-                return
-            
-            # This is a REAL manual movement
-            self.last_position = (x, y)
             self.last_activity_time = current_time
             if self.is_auto_moving:
                 self.is_auto_moving = False
@@ -248,39 +234,34 @@ class MouseMonitor:
         
         return False
     
-    def move_mouse_relative(self, dx, dy):
-        """Move mouse using Windows API SendInput with relative movement (generates proper input events)"""
+    def send_alt_tab(self):
+        """Send Alt+Tab with Tab pressed a random number of times (1 to 9) while Alt is held."""
         if not hasattr(self, 'windows_api_available') or not self.windows_api_available:
             return False
-            
         try:
-            # Create proper NULL pointer for dwExtraInfo
             null_ptr = ctypes.cast(0, ctypes.POINTER(wintypes.ULONG))
-            
-            # Use relative movement which generates proper WM_MOUSEMOVE messages
-            # This creates actual Windows input events that applications like ManicTime can detect
-            mouse_input = self.MOUSEINPUT_STRUCT(
-                dx=int(round(dx)),
-                dy=int(round(dy)),
-                mouseData=0,
-                dwFlags=self.MOUSEEVENTF_MOVE,  # Relative movement flag (not absolute)
-                time=0,
-                dwExtraInfo=null_ptr
-            )
-            
-            # Create input structure with proper union initialization
-            input_struct = self.INPUT_STRUCT()
-            input_struct.type = self.INPUT_MOUSE
-            input_struct.union.mi = mouse_input
-            
-            # Send the input - this generates proper Windows input events that system-wide hooks can detect
-            # SendInput injects input at a low level, similar to physical mouse movement
-            # This is what applications like ManicTime monitor to detect user activity
-            result = self.user32.SendInput(1, ctypes.byref(input_struct), ctypes.sizeof(self.INPUT_STRUCT))
-            return result == 1
+            KEYEVENTF_KEYUP = self.KEYEVENTF_KEYUP
+            tab_scan = self.user32.MapVirtualKeyW(self.VK_TAB, 0)
+            menu_scan = self.user32.MapVirtualKeyW(self.VK_MENU, 0)
+            # Sequence: Alt down, then Tab down/up × random count (1-9), then Alt up
+            inputs = [
+                self.KEYBDINPUT_STRUCT(self.VK_MENU, menu_scan, 0, 0, null_ptr),
+            ]
+            tab_count = random.randint(1, 9)
+            for _ in range(tab_count):
+                inputs.append(self.KEYBDINPUT_STRUCT(self.VK_TAB, tab_scan, 0, 0, null_ptr))
+                inputs.append(self.KEYBDINPUT_STRUCT(self.VK_TAB, tab_scan, KEYEVENTF_KEYUP, 0, null_ptr))
+            inputs.append(self.KEYBDINPUT_STRUCT(self.VK_MENU, menu_scan, KEYEVENTF_KEYUP, 0, null_ptr))
+            n = len(inputs)
+            arr = (self.INPUT_STRUCT * n)()
+            for i, ki in enumerate(inputs):
+                arr[i].type = self.INPUT_KEYBOARD
+                arr[i].union.ki = ki
+            result = self.user32.SendInput(n, arr, ctypes.sizeof(self.INPUT_STRUCT))
+            return result == n
         except Exception:
             return False
-    
+
     def scroll_mouse(self, delta, horizontal=False):
         """Scroll mouse wheel using Windows API SendInput (generates proper input events)"""
         if not hasattr(self, 'windows_api_available') or not self.windows_api_available:
@@ -318,203 +299,69 @@ class MouseMonitor:
         except Exception:
             return False
     
-    def natural_move(self, start_x, start_y, end_x, end_y):
-        """Move mouse smoothly using low-level Windows API with smooth interpolation"""
-        # Set flag atomically (boolean assignment is atomic in Python)
-        self.is_auto_move_in_progress = True
-        
-        try:
-            # Get current position first using low-level Windows API (might differ from start_x, start_y)
-            current_pos = self.get_mouse_position()
-            current_x, current_y = current_pos[0], current_pos[1]
-            
-            # Calculate total distance to move
-            total_dx = end_x - current_x
-            total_dy = end_y - current_y
-            distance = math.sqrt(total_dx * total_dx + total_dy * total_dy)
-            
-            if distance < 1:
-                # Already at target, skip
-                return
-            
-            # Calculate optimal number of steps for smooth movement
-            # More steps for smoother movement
-            if distance < 50:
-                steps = 8
-            elif distance < 150:
-                steps = 12
-            elif distance < 300:
-                steps = 18
-            else:
-                steps = 25
-            
-            # Smooth interpolation using ease-in-out curve
-            prev_t = 0.0
-            for i in range(1, steps + 1):
-                if not self.is_auto_moving:
-                    break
-                
-                # Ease-in-out interpolation (smooth start and end)
-                t = i / steps
-                # Cubic ease-in-out: t^2 * (3 - 2*t)
-                eased_t = t * t * (3.0 - 2.0 * t)
-                
-                # Calculate the portion of movement for this step
-                step_portion = eased_t - prev_t
-                prev_t = eased_t
-                
-                # Calculate relative movement for this step
-                step_dx = total_dx * step_portion
-                step_dy = total_dy * step_portion
-                
-                # Skip if movement is too small
-                if abs(step_dx) < 0.1 and abs(step_dy) < 0.1:
-                    continue
-                
-                try:
-                    # Use ONLY low-level Windows API for proper input events
-                    # No fallback - if API fails, we skip this step
-                    success = self.move_mouse_relative(step_dx, step_dy)
-                    
-                    if not success:
-                        # If Windows API fails, skip this step instead of using high-level fallback
-                        continue
-                    
-                    # Update current position estimate
-                    current_x += step_dx
-                    current_y += step_dy
-                    
-                    # Small delay for smooth rendering
-                    if i < steps:
-                        time.sleep(0.003)  # 3ms delay for smoother movement
-                        
-                except Exception:
-                    break
-        finally:
-            # Clear flag atomically when done
-            self.is_auto_move_in_progress = False
-    
     def auto_move_mouse(self):
-        """Automatically generate mouse movement or scroll events using low-level Windows API"""
-        # Get starting position using low-level Windows API
+        """Automatically generate mouse scroll or Alt+Tab events using low-level Windows API"""
         with self.lock:
             if not self.is_auto_moving:
                 return
-            start_pos = self.get_mouse_position()
-        
-        # Random distance range (in pixels) - reduced for smaller, more subtle movements
-        min_distance = 30  # Minimum movement distance
-        max_distance = 120  # Maximum movement distance
-        
+
         while self.is_auto_moving and self.running:
-            # Check if we should continue
             with self.lock:
                 if not self.is_auto_moving:
                     break
-            
-            # Check and update mode switching logic
+
             current_time = time.time()
             time_since_last_switch = current_time - self.last_mode_switch_time
-            
+
             with self.lock:
-                # Check if we need to switch to frequent mode (30-50 minutes passed)
                 if not self.frequent_mode:
                     if time_since_last_switch >= self.next_mode_switch_interval:
-                        # Time to switch to frequent mode for one event
                         self.frequent_mode = True
                         self.last_mode_switch_time = current_time
-                        # Set next switch interval (will be reset after frequent mode event)
                         self.next_mode_switch_interval = random.randint(30 * 60, 50 * 60)
-                
-                # Determine current interval based on mode
+
                 if self.frequent_mode:
-                    wait_interval = 60  # 1 minute wait in frequent mode (only once)
+                    wait_interval = 60
                 else:
-                    wait_interval = self.auto_move_interval  # 5 seconds in normal mode
-                
+                    wait_interval = self.auto_move_interval
+
             try:
-                # Randomly choose between mouse movement and scroll
-                choice = random.choice(['move', 'scroll'])
-                
-                if choice == 'move':
-                    # Perform mouse movement - get position using low-level Windows API
-                    current_pos = self.get_mouse_position()
-                    current_x, current_y = current_pos[0], current_pos[1]
-                    
-                    # Generate random distance - reduced range for smaller movements
-                    distance = random.randint(min_distance, max_distance)
-                    
-                    # Generate completely random direction (0 to 2π radians)
-                    angle = random.uniform(0, 2 * math.pi)
-                    
-                    # Calculate new position with random distance and direction
-                    new_x = current_x + distance * math.cos(angle)
-                    new_y = current_y + distance * math.sin(angle)
-                    
-                    # Add small random offset for even more natural variation
-                    new_x += random.randint(-5, 5)
-                    new_y += random.randint(-5, 5)
-                    
-                    # Natural smooth movement to new position using low-level Windows API
-                    self.natural_move(current_x, current_y, new_x, new_y)
-                    
-                    # Update tracking variables for manual movement detection (minimal lock time)
-                    # Get final position using low-level Windows API
-                    final_pos = self.get_mouse_position()
-                    event_time = time.time()
-                    with self.lock:
-                        self.last_auto_position = (final_pos[0], final_pos[1])
-                        self.last_auto_move_time = event_time
-                        self.last_position = self.last_auto_position
-                
-                else:
-                    # Perform mouse scroll using low-level Windows API
-                    # Random scroll amount (1-3 units, up or down)
+                choice = random.choice(['scroll', 'alt_tab'])
+
+                if choice == 'scroll':
                     scroll_units = random.choice([1, 2, 3])
-                    scroll_direction = random.choice([-1, 1])  # -1 = down, 1 = up
-                    
-                    # Randomly choose vertical or horizontal scroll
+                    scroll_direction = random.choice([-1, 1])
                     is_horizontal = random.choice([False, True])
-            
-                    # Generate scroll event using low-level Windows API
                     self.scroll_mouse(scroll_direction * scroll_units, horizontal=is_horizontal)
-                
+                else:
+                    self.send_alt_tab()
             except Exception:
                 pass
-            
-            # If we just executed a frequent mode event, switch back to normal mode immediately
+
             with self.lock:
                 if self.frequent_mode:
-                    # Switch back to normal mode after the frequent mode event
                     self.frequent_mode = False
                     self.last_mode_switch_time = time.time()
-                    # Set next switch interval
-                    self.next_mode_switch_interval = random.randint(30 * 60, 50 * 60)  # Next switch in 30-50 minutes
-            
-            # Wait for the determined interval before next movement
+                    self.next_mode_switch_interval = random.randint(30 * 60, 50 * 60)
+
             if self.is_auto_moving:
-                # Sleep in small increments to allow for quick interruption
                 elapsed = 0
-                sleep_chunk = min(5, wait_interval)  # Check every 5 seconds max
+                sleep_chunk = min(5, wait_interval)
                 while elapsed < wait_interval and self.is_auto_moving:
                     time.sleep(sleep_chunk)
                     elapsed += sleep_chunk
                     if elapsed >= wait_interval:
                         break
-    
+
     def start_auto_moving(self):
         """Start the auto-move thread"""
         with self.lock:
             if not self.is_auto_moving:
                 self.is_auto_moving = True
-                # Initialize tracking variables
-                self.last_auto_position = None
-                self.last_auto_move_time = None
-                # Reset mode switching to start fresh
                 self.frequent_mode = False
                 self.last_mode_switch_time = time.time()
-                self.next_mode_switch_interval = random.randint(30 * 60, 50 * 60)  # Next switch in 30-50 minutes
-                
+                self.next_mode_switch_interval = random.randint(30 * 60, 50 * 60)
+
                 if self.auto_move_thread is None or not self.auto_move_thread.is_alive():
                     self.auto_move_thread = threading.Thread(target=self.auto_move_mouse, daemon=True)
                     self.auto_move_thread.start()
@@ -524,9 +371,6 @@ class MouseMonitor:
         with self.lock:
             if self.is_auto_moving:
                 self.is_auto_moving = False
-                self.is_auto_move_in_progress = False
-                self.last_auto_position = None
-                self.last_auto_move_time = None
     
     def monitor_loop(self):
         """Main monitoring loop - checks user activity status periodically"""
@@ -546,9 +390,8 @@ class MouseMonitor:
     
     def start(self):
         """Start the activity monitor"""
-        # Set up mouse listener for all mouse events
+        # Set up mouse listener (scroll and click only; no on_move to avoid movement resetting idle)
         mouse_listener = mouse.Listener(
-            on_move=self.on_move,
             on_click=self.on_click,
             on_scroll=self.on_scroll
         )
