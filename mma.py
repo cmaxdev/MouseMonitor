@@ -1,9 +1,9 @@
 """
 Mouse Monitor and Auto-Mover
 
-Monitors user activity (keyboard and mouse: clicks, scroll). If no user event
-occurs for 30 seconds, automatically generates either a mouse scroll event or
-an Alt+Tab event.
+Monitors user activity (keyboard and mouse: clicks, scroll). After 15 seconds
+with no user event, generates: mouse scroll every 3–8s (random) and Alt+Tab
+every 10–15s (random).
 """
 
 import time
@@ -41,16 +41,19 @@ class MouseMonitor:
         self.last_position = None
         self.last_activity_time = time.time()  # Last user activity (keyboard or mouse click/scroll)
         self.check_interval = 5  # Check for user activity every 5 seconds
-        self.idle_threshold = 30  # After 30 seconds with no user event, generate scroll or Alt+Tab
-        self.auto_move_interval = 5  # Interval between generated events when idle
+        self.idle_threshold = 15  # Start generating only after 15 seconds with no user event
         self.is_auto_moving = False
         self.auto_move_thread = None
         self.running = True
         
-        # Mode switching for periodic frequent events
-        self.frequent_mode = False  # When True, next event will wait 1 minute
-        self.last_mode_switch_time = time.time()  # Track when mode was last switched
-        self.next_mode_switch_interval = random.randint(30 * 60, 50 * 60)  # Next switch in 30-50 minutes (in seconds)
+        # Scroll: every 3–8 seconds (random). Alt+Tab: every 10–15 seconds (random).
+        self.last_scroll_time = 0.0
+        self.last_alt_tab_time = 0.0
+        self.next_scroll_interval = 0.0  # Set when thread starts
+        self.next_alt_tab_interval = 0.0
+        # Time of last event we caused (scroll/Alt+Tab); ignore such events in activity detection
+        self._last_caused_event_time = 0.0
+        self._caused_event_ignore_seconds = 0.5
         
         # Lock for thread-safe operations
         self.lock = threading.Lock()
@@ -165,9 +168,12 @@ class MouseMonitor:
             self.windows_api_available = False
     
     def on_activity(self):
-        """Update activity time and stop auto-movement"""
+        """Update activity time and stop auto-movement. Ignore events we caused (scroll/Alt+Tab)."""
         current_time = time.time()
         with self.lock:
+            # Do not count our own generated events as user activity
+            if self._last_caused_event_time and (current_time - self._last_caused_event_time) < self._caused_event_ignore_seconds:
+                return
             self.last_activity_time = current_time
             if self.is_auto_moving:
                 self.is_auto_moving = False
@@ -300,68 +306,62 @@ class MouseMonitor:
             return False
     
     def auto_move_mouse(self):
-        """Automatically generate mouse scroll or Alt+Tab events using low-level Windows API"""
+        """Generate scroll every 3–8s and Alt+Tab every 10–15s (random) while idle."""
         with self.lock:
             if not self.is_auto_moving:
                 return
+            self.last_scroll_time = time.time()
+            self.last_alt_tab_time = time.time()
+            self.next_scroll_interval = random.uniform(3, 8)
+            self.next_alt_tab_interval = random.uniform(10, 15)
 
         while self.is_auto_moving and self.running:
             with self.lock:
                 if not self.is_auto_moving:
                     break
-
             current_time = time.time()
-            time_since_last_switch = current_time - self.last_mode_switch_time
 
             with self.lock:
-                if not self.frequent_mode:
-                    if time_since_last_switch >= self.next_mode_switch_interval:
-                        self.frequent_mode = True
-                        self.last_mode_switch_time = current_time
-                        self.next_mode_switch_interval = random.randint(30 * 60, 50 * 60)
+                due_scroll = (current_time - self.last_scroll_time) >= self.next_scroll_interval
+                due_alt_tab = (current_time - self.last_alt_tab_time) >= self.next_alt_tab_interval
 
-                if self.frequent_mode:
-                    wait_interval = 60
-                else:
-                    wait_interval = self.auto_move_interval
-
-            try:
-                choice = random.choice(['scroll', 'alt_tab'])
-
-                if choice == 'scroll':
+            if due_scroll:
+                try:
+                    with self.lock:
+                        self._last_caused_event_time = time.time()
                     scroll_units = random.choice([1, 2, 3])
                     scroll_direction = random.choice([-1, 1])
                     is_horizontal = random.choice([False, True])
                     self.scroll_mouse(scroll_direction * scroll_units, horizontal=is_horizontal)
-                else:
+                    with self.lock:
+                        self.last_scroll_time = time.time()
+                        self.next_scroll_interval = random.uniform(3, 8)
+                except Exception:
+                    pass
+
+            if due_alt_tab:
+                try:
+                    with self.lock:
+                        self._last_caused_event_time = time.time()
                     self.send_alt_tab()
-            except Exception:
-                pass
+                    with self.lock:
+                        self.last_alt_tab_time = time.time()
+                        self.next_alt_tab_interval = random.uniform(10, 15)
+                except Exception:
+                    pass
 
-            with self.lock:
-                if self.frequent_mode:
-                    self.frequent_mode = False
-                    self.last_mode_switch_time = time.time()
-                    self.next_mode_switch_interval = random.randint(30 * 60, 50 * 60)
-
+            # Check again every second so we stay responsive to stop
             if self.is_auto_moving:
-                elapsed = 0
-                sleep_chunk = min(5, wait_interval)
-                while elapsed < wait_interval and self.is_auto_moving:
-                    time.sleep(sleep_chunk)
-                    elapsed += sleep_chunk
-                    if elapsed >= wait_interval:
+                for _ in range(10):
+                    if not self.is_auto_moving:
                         break
+                    time.sleep(0.1)
 
     def start_auto_moving(self):
         """Start the auto-move thread"""
         with self.lock:
             if not self.is_auto_moving:
                 self.is_auto_moving = True
-                self.frequent_mode = False
-                self.last_mode_switch_time = time.time()
-                self.next_mode_switch_interval = random.randint(30 * 60, 50 * 60)
-
                 if self.auto_move_thread is None or not self.auto_move_thread.is_alive():
                     self.auto_move_thread = threading.Thread(target=self.auto_move_mouse, daemon=True)
                     self.auto_move_thread.start()
