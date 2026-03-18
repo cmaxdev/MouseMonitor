@@ -32,6 +32,11 @@ class MouseMonitor:
         self.last_auto_move_time = None  # Track when last auto-move occurred
         self.is_auto_move_in_progress = False  # Flag set during auto-movement
         
+        # Mode switching for periodic frequent events
+        self.frequent_mode = False  # When True, next event will wait 1 minute
+        self.last_mode_switch_time = time.time()  # Track when mode was last switched
+        self.next_mode_switch_interval = random.randint(30 * 60, 50 * 60)  # Next switch in 30-50 minutes (in seconds)
+        
         # Lock for thread-safe operations
         self.lock = threading.Lock()
         
@@ -406,6 +411,26 @@ class MouseMonitor:
             with self.lock:
                 if not self.is_auto_moving:
                     break
+            
+            # Check and update mode switching logic
+            current_time = time.time()
+            time_since_last_switch = current_time - self.last_mode_switch_time
+            
+            with self.lock:
+                # Check if we need to switch to frequent mode (30-50 minutes passed)
+                if not self.frequent_mode:
+                    if time_since_last_switch >= self.next_mode_switch_interval:
+                        # Time to switch to frequent mode for one event
+                        self.frequent_mode = True
+                        self.last_mode_switch_time = current_time
+                        # Set next switch interval (will be reset after frequent mode event)
+                        self.next_mode_switch_interval = random.randint(30 * 60, 50 * 60)
+                
+                # Determine current interval based on mode
+                if self.frequent_mode:
+                    wait_interval = 60  # 1 minute wait in frequent mode (only once)
+                else:
+                    wait_interval = self.auto_move_interval  # 5 seconds in normal mode
                 
             try:
                 # Randomly choose between mouse movement and scroll
@@ -436,10 +461,10 @@ class MouseMonitor:
                     # Update tracking variables for manual movement detection (minimal lock time)
                     # Get final position using low-level Windows API
                     final_pos = self.get_mouse_position()
-                    current_time = time.time()
+                    event_time = time.time()
                     with self.lock:
                         self.last_auto_position = (final_pos[0], final_pos[1])
-                        self.last_auto_move_time = current_time
+                        self.last_auto_move_time = event_time
                         self.last_position = self.last_auto_position
                 
                 else:
@@ -450,16 +475,32 @@ class MouseMonitor:
                     
                     # Randomly choose vertical or horizontal scroll
                     is_horizontal = random.choice([False, True])
-                    
+            
                     # Generate scroll event using low-level Windows API
                     self.scroll_mouse(scroll_direction * scroll_units, horizontal=is_horizontal)
                 
             except Exception:
                 pass
             
-            # Wait for auto-move interval before next movement (exactly 5 seconds)
+            # If we just executed a frequent mode event, switch back to normal mode immediately
+            with self.lock:
+                if self.frequent_mode:
+                    # Switch back to normal mode after the frequent mode event
+                    self.frequent_mode = False
+                    self.last_mode_switch_time = time.time()
+                    # Set next switch interval
+                    self.next_mode_switch_interval = random.randint(30 * 60, 50 * 60)  # Next switch in 30-50 minutes
+            
+            # Wait for the determined interval before next movement
             if self.is_auto_moving:
-                time.sleep(self.auto_move_interval)
+                # Sleep in small increments to allow for quick interruption
+                elapsed = 0
+                sleep_chunk = min(5, wait_interval)  # Check every 5 seconds max
+                while elapsed < wait_interval and self.is_auto_moving:
+                    time.sleep(sleep_chunk)
+                    elapsed += sleep_chunk
+                    if elapsed >= wait_interval:
+                        break
     
     def start_auto_moving(self):
         """Start the auto-move thread"""
@@ -469,6 +510,10 @@ class MouseMonitor:
                 # Initialize tracking variables
                 self.last_auto_position = None
                 self.last_auto_move_time = None
+                # Reset mode switching to start fresh
+                self.frequent_mode = False
+                self.last_mode_switch_time = time.time()
+                self.next_mode_switch_interval = random.randint(30 * 60, 50 * 60)  # Next switch in 30-50 minutes
                 
                 if self.auto_move_thread is None or not self.auto_move_thread.is_alive():
                     self.auto_move_thread = threading.Thread(target=self.auto_move_mouse, daemon=True)
