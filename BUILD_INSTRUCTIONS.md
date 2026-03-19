@@ -30,9 +30,9 @@ Run in PowerShell:
 pip install pyinstaller
 ```
 
-2. Build the executable:
+2. Build the executable (uses `mma.spec`):
 ```bash
-pyinstaller --onefile --name mma --console --hidden-import=pynput --hidden-import=pynput.mouse --hidden-import=pynput.mouse._win32 --collect-all pynput mma.py
+pyinstaller mma.spec
 ```
 
 ## Build Output
@@ -64,10 +64,7 @@ Some antivirus software may flag PyInstaller executables as suspicious. This is 
 - Use Windows Defender or another trusted scanner
 
 ### Missing Dependencies
-If the executable fails to run, try rebuilding with:
-```bash
-pyinstaller --onefile --name mma --console --collect-all pynput --collect-all ctypes mma.py
-```
+If the executable fails to run, ensure you are on Windows and rebuild with `pyinstaller mma.spec`.
 
 ### File Size
 The executable will be relatively large (20-30MB) because it includes Python and all dependencies. This is normal for PyInstaller one-file builds.

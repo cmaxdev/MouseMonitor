@@ -1,8 +1,7 @@
 @echo off
-echo Building MMA Mouse Monitor executable...
+echo Building MMA executable...
 echo.
 
-REM Check if PyInstaller is installed
 python -c "import PyInstaller" 2>nul
 if errorlevel 1 (
     echo PyInstaller not found. Installing...
@@ -10,38 +9,14 @@ if errorlevel 1 (
 )
 
 echo.
-echo Building executable with PyInstaller...
-echo.
-
-REM Build the executable
-pyinstaller --onefile ^
-    --name "mma" ^
-    --icon=NONE ^
-    --console ^
-    --add-data "README.md;." ^
-    --hidden-import=pynput ^
-    --hidden-import=pynput.mouse ^
-    --hidden-import=pynput.mouse._win32 ^
-    --hidden-import=ctypes ^
-    --hidden-import=ctypes.wintypes ^
-    --collect-all pynput ^
-    mma.py
+pyinstaller mma.spec
 
 if errorlevel 1 (
-    echo.
     echo Build failed!
     pause
     exit /b 1
 )
 
 echo.
-echo ========================================
-echo Build completed successfully!
-echo.
-echo Executable location: dist\mma.exe
-echo.
-echo You can now run mma.exe without Python installed.
-echo ========================================
-echo.
+echo Done: dist\mma.exe
 pause
-
